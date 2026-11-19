@@ -1,4 +1,6 @@
 vmtrace
+short-loop
+*.o
 build/
 CMakeCache.txt
 CMakeFiles/
