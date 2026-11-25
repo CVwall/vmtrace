@@ -8,10 +8,34 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 typedef unsigned long long Page;
 
 int maxFrames = 10;          // -n: number of pages allocated to the process
+std::vector<Page> frames;    // pages currently in memory
+int hand = 0;                // next victim for FIFO
+
+// Returns the frame holding the page, or -1 if not in memory
+int findPage(Page page) {
+    for (size_t i = 0; i < frames.size(); i++)
+        if (frames[i] == page) return i;
+    return -1;
+}
+
+// Each policy returns true on a page fault
+
+// FIFO: replace the page that has been in memory the longest
+bool fifo(Page page) {
+    if (findPage(page) != -1) return false;
+    if ((int) frames.size() < maxFrames) {
+        frames.push_back(page);
+    } else {
+        frames[hand] = page;
+        hand = (hand + 1) % maxFrames;
+    }
+    return true;
+}
 
 void usage() {
     fprintf(stderr, "Usage: vmtrace -p fifo|lru|clock|lfu [-n pages] command [args...]\n");
@@ -31,8 +55,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (policy != "fifo" && policy != "lru" && policy != "clock" && policy != "lfu")
-        usage();
+    bool (*reference)(Page);
+    if (policy == "fifo") reference = fifo;
+    else usage();
+
     if (maxFrames < 1 || optind >= argc) usage();
 
     long refCount = 0;
@@ -46,6 +72,7 @@ int main(int argc, char* argv[]) {
         exit(1);
     } else {
         long page_size = sysconf(_SC_PAGE_SIZE);
+        long pageFaults = 0;
         Page lastPage = 0;
         int status;
         // Wait for the child to stop before starting to trace its instructions
@@ -62,14 +89,17 @@ int main(int argc, char* argv[]) {
             Page page_num = mem_addr / page_size;
 
             refCount++;
+            bool fault = reference(page_num);
+            if (fault) pageFaults++;
+
             if (page_num != lastPage)
-                printf("[%ld] at %llx Page %llx\n", refCount, mem_addr, page_num);
+                printf("[%ld/%ld] at %llx Page %llx\n", refCount, pageFaults, mem_addr, page_num);
             lastPage = page_num;
             // Continue tracing to the next instruction of the child process
             ptrace((__ptrace_request) PTRACE_SINGLESTEP, ch_pid, nullptr, nullptr);
         }
-        printf("\nPolicy: %s, Page Allocation: %d, RefCount: %ld\n",
-               policy.c_str(), maxFrames, refCount);
+        printf("\nPage Allocation: %d, RefCount: %ld, Page Faults: %ld (%.4f%%)\n",
+               maxFrames, refCount, pageFaults, 100.0 * pageFaults / refCount);
     }
     return 0;
 }
