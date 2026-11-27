@@ -14,7 +14,9 @@ typedef unsigned long long Page;
 
 int maxFrames = 10;          // -n: number of pages allocated to the process
 std::vector<Page> frames;    // pages currently in memory
-int hand = 0;                // next victim for FIFO
+std::vector<long> info;      // extra value per frame, used differently by each policy
+long refCount = 0;           // number of memory references so far
+int hand = 0;                // next victim for FIFO / clock hand for Clock
 
 // Returns the frame holding the page, or -1 if not in memory
 int findPage(Page page) {
@@ -33,6 +35,69 @@ bool fifo(Page page) {
     } else {
         frames[hand] = page;
         hand = (hand + 1) % maxFrames;
+    }
+    return true;
+}
+
+// LRU: info[] holds the time of the last reference to each page
+bool lru(Page page) {
+    int i = findPage(page);
+    if (i != -1) {
+        info[i] = refCount;
+        return false;
+    }
+    if ((int) frames.size() < maxFrames) {
+        frames.push_back(page);
+        info.push_back(refCount);
+    } else {
+        int victim = 0;
+        for (int k = 1; k < maxFrames; k++)
+            if (info[k] < info[victim]) victim = k;
+        frames[victim] = page;
+        info[victim] = refCount;
+    }
+    return true;
+}
+
+// Clock (second chance): info[] holds the 1-bit reference bit of each page
+bool clockPolicy(Page page) {
+    int i = findPage(page);
+    if (i != -1) {
+        info[i] = 1;
+        return false;
+    }
+    if ((int) frames.size() < maxFrames) {
+        frames.push_back(page);
+        info.push_back(1);
+    } else {
+        // Skip (and clear) pages whose reference bit is set
+        while (info[hand] == 1) {
+            info[hand] = 0;
+            hand = (hand + 1) % maxFrames;
+        }
+        frames[hand] = page;
+        info[hand] = 1;
+        hand = (hand + 1) % maxFrames;
+    }
+    return true;
+}
+
+// LFU: info[] holds how many times each page has been referenced
+bool lfu(Page page) {
+    int i = findPage(page);
+    if (i != -1) {
+        info[i]++;
+        return false;
+    }
+    if ((int) frames.size() < maxFrames) {
+        frames.push_back(page);
+        info.push_back(1);
+    } else {
+        int victim = 0;
+        for (int k = 1; k < maxFrames; k++)
+            if (info[k] < info[victim]) victim = k;
+        frames[victim] = page;
+        info[victim] = 1;
     }
     return true;
 }
@@ -57,11 +122,13 @@ int main(int argc, char* argv[]) {
 
     bool (*reference)(Page);
     if (policy == "fifo") reference = fifo;
+    else if (policy == "lru") reference = lru;
+    else if (policy == "clock") reference = clockPolicy;
+    else if (policy == "lfu") reference = lfu;
     else usage();
 
     if (maxFrames < 1 || optind >= argc) usage();
 
-    long refCount = 0;
     pid_t ch_pid = fork();
     if (ch_pid == 0) {
         // Tell parent to trace this process
